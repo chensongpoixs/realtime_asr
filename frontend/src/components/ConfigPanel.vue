@@ -205,21 +205,22 @@ onMounted(loadConfig)
 
 <style scoped>
 .config-panel {
-  background: #1e1e2e;
+  background: #fff;
   border-radius: 12px;
   padding: 20px;
   margin-bottom: 16px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
 }
 
 .config-panel h3 {
   margin: 0 0 16px 0;
-  color: #cdd6f4;
+  color: #333;
   font-size: 16px;
 }
 
 .config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
   gap: 12px;
 }
 
@@ -228,7 +229,7 @@ onMounted(loadConfig)
   flex-direction: column;
   gap: 4px;
   font-size: 13px;
-  color: #a6adc8;
+  color: #666;
 }
 
 .config-grid label.full-width {
@@ -238,17 +239,18 @@ onMounted(loadConfig)
 .config-grid select,
 .config-grid input {
   padding: 8px 10px;
-  border: 1px solid #45475a;
+  border: 1px solid #d0d0d0;
   border-radius: 6px;
-  background: #313244;
-  color: #cdd6f4;
+  background: #fff;
+  color: #333;
   font-size: 14px;
 }
 
 .config-grid select:focus,
 .config-grid input:focus {
   outline: none;
-  border-color: #89b4fa;
+  border-color: #4a6cf7;
+  box-shadow: 0 0 0 2px rgba(74,108,247,0.15);
 }
 
 .toggle-group {
@@ -256,7 +258,7 @@ onMounted(loadConfig)
   gap: 0;
   border-radius: 6px;
   overflow: hidden;
-  border: 1px solid #45475a;
+  border: 1px solid #d0d0d0;
 }
 
 .toggle-btn {
@@ -264,21 +266,21 @@ onMounted(loadConfig)
   padding: 8px 12px;
   border: none;
   border-radius: 0;
-  background: #313244;
-  color: #a6adc8;
+  background: #f5f5f5;
+  color: #666;
   font-size: 13px;
   cursor: pointer;
   transition: background 0.2s, color 0.2s;
 }
 
 .toggle-btn.active {
-  background: #89b4fa;
-  color: #1e1e2e;
+  background: #4a6cf7;
+  color: #fff;
   font-weight: 600;
 }
 
 .toggle-btn:not(.active):hover {
-  background: #45475a;
+  background: #e8e8e8;
 }
 
 .config-actions {
@@ -291,12 +293,12 @@ button {
   padding: 8px 16px;
   border: none;
   border-radius: 6px;
-  background: #89b4fa;
-  color: #1e1e2e;
+  background: #4a6cf7;
+  color: #fff;
   font-size: 14px;
   font-weight: 600;
   cursor: pointer;
-  transition: opacity 0.2s;
+  transition: opacity 0.2s, background 0.2s;
 }
 
 button:disabled {
@@ -305,24 +307,34 @@ button:disabled {
 }
 
 button:hover:not(:disabled) {
-  background: #b4d0fb;
+  background: #3b5de7;
 }
 
 .btn-secondary {
-  background: #45475a;
-  color: #cdd6f4;
+  background: #e8e8e8;
+  color: #333;
 }
 
 .btn-secondary:hover {
-  background: #585b70;
+  background: #d5d5d5;
 }
 
 .config-status {
   margin-top: 12px;
   padding: 8px 12px;
-  background: #313244;
+  background: #e8f5e9;
   border-radius: 6px;
   font-size: 13px;
-  color: #a6e3a1;
+  color: #2e7d32;
+}
+
+/* ─── 手机端 ─── */
+@media (max-width: 768px) {
+  .config-panel {
+    padding: 14px;
+  }
+  .config-grid {
+    grid-template-columns: 1fr;
+  }
 }
 </style>

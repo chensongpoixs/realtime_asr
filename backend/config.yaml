@@ -1,14 +1,17 @@
 frontend:
   dist_path: ../frontend/dist
 model:
-  compute_type: int8
+  compute_type: float16
   device: cuda
-  download_root: ./models
+  download_root: D:/Work/AI/AGIC/VoxQuery/models/whisper
   hf_endpoint: https://hf-mirror.com
   model_path: large-v3
 server:
   host: 0.0.0.0
   port: 9765
+  ssl_cert: ./fullchain.pem
+  ssl_enabled: true
+  ssl_key: ./privkey.pem
 transcription:
   buffer_threshold: 2
   language: zh

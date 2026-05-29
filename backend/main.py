@@ -3,7 +3,10 @@ WhisperWeb 后端入口 - FastAPI + WebSocket 实时语音转写服务
 """
 import json
 import logging
+import socket
+import subprocess
 import sys
+import tempfile
 import time
 import traceback
 from datetime import datetime
@@ -157,7 +160,11 @@ async def startup():
     logger.info("=" * 60)
     load_config()
     server = _config.get("server", {})
-    logger.info(f"[INIT] 服务地址: http://{server.get('host', '0.0.0.0')}:{server.get('port', 8765)}")
+    use_ssl = server.get("ssl_enabled", False)
+    proto = "https" if use_ssl else "http"
+    logger.info(f"[INIT] 服务地址: {proto}://{server.get('host', '0.0.0.0')}:{server.get('port', 9765)}")
+    if not use_ssl:
+        logger.info(f"[INIT] SSL 未启用（ssl_enabled=false）")
     logger.info(f"[INIT] API 端点:")
     logger.info(f"[INIT]   GET  /api/health          - 健康检查")
     logger.info(f"[INIT]   GET  /api/config          - 获取配置")
@@ -347,7 +354,9 @@ async def websocket_transcribe(ws: WebSocket):
                     await ws.send_json({"type": "status", "message": "转写完成"})
                     break
 
-    except WebSocketDisconnect:
+    except (WebSocketDisconnect, RuntimeError):
+        # RuntimeError: "Cannot call receive once a disconnect message has been received."
+        # Starlette 新版在客户端提前断开时抛出此异常
         logger.info(f"[WS] 客户端断开连接 <-- {client}")
     except Exception as e:
         logger.error(f"[WS] 异常: {e}")
@@ -398,20 +407,149 @@ async def serve_frontend(full_path: str):
     )
 
 
+# ─── SSL 证书自动生成 ────────────────────────────────────────
+
+
+def get_local_ips() -> list[str]:
+    """获取本机所有局域网 IP"""
+    ips = ["127.0.0.1", "localhost"]
+    try:
+        hostname = socket.gethostname()
+        ips.append(hostname)
+        ips.append(f"{hostname}.local")
+    except Exception:
+        pass
+    try:
+        # 获取默认路由对应的 IP
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.settimeout(0.1)
+        s.connect(("8.8.8.8", 80))
+        ips.append(s.getsockname()[0])
+        s.close()
+    except Exception:
+        pass
+    return list(set(ips))
+
+
+def generate_self_signed_cert(cert_path: str, key_path: str) -> bool:
+    """生成带 SAN 的自签名证书，解决 iOS WSS 证书主机名不匹配问题"""
+    ips = get_local_ips()
+    logger = logging.getLogger("whisperweb")
+
+    # 构建 SAN 扩展：DNS + IP
+    san_entries = []
+    for ip in ips:
+        try:
+            socket.inet_aton(ip)
+            san_entries.append(f"IP:{ip}")
+        except (socket.error, OSError):
+            san_entries.append(f"DNS:{ip}")
+
+    san_ext = ",".join(san_entries)
+    logger.info(f"[SSL] 生成自签名证书, SAN: {san_ext}")
+
+    # 创建临时配置文件（openssl 需要配置文件来指定 SAN）
+    config = f"""
+[req]
+distinguished_name = req_distinguished_name
+x509_extensions = v3_req
+prompt = no
+
+[req_distinguished_name]
+CN = WhisperWeb
+
+[v3_req]
+subjectAltName = {san_ext}
+keyUsage = digitalSignature, keyEncipherment
+extendedKeyUsage = serverAuth
+"""
+    try:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".cnf", delete=False) as f:
+            f.write(config)
+            config_file = f.name
+
+        subprocess.run(
+            [
+                "openssl", "req", "-x509", "-newkey", "rsa:2048",
+                "-keyout", key_path,
+                "-out", cert_path,
+                "-days", "3650",
+                "-nodes",
+                "-config", config_file,
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        Path(config_file).unlink()
+        logger.info(f"[SSL] 证书已生成: {cert_path}")
+        logger.info(f"[SSL] 私钥已生成: {key_path}")
+        return True
+    except subprocess.CalledProcessError as e:
+        logger.error(f"[SSL] 证书生成失败: {e.stderr}")
+        return False
+    except FileNotFoundError:
+        logger.error("[SSL] 未安装 openssl，无法生成证书。请安装: apt install openssl")
+        return False
+
+
 # ─── 启动入口 ────────────────────────────────────────────────
 
 if __name__ == "__main__":
     import uvicorn
 
-    # 启动时也打印一份配置摘要
     cfg = load_config()
     server = cfg.get("server", {})
     host = server.get("host", "0.0.0.0")
-    port = server.get("port", 8765)
+    port = server.get("port", 9765)
+    use_ssl = server.get("ssl_enabled", False)
+
+    ssl_cert = server.get("ssl_cert", "./fullchain.pem")
+    ssl_key = server.get("ssl_key", "./privkey.pem")
+
+    cert_path = Path(ssl_cert)
+    key_path = Path(ssl_key)
+    if not cert_path.is_absolute():
+        cert_path = CONFIG_PATH.parent / cert_path
+    if not key_path.is_absolute():
+        key_path = CONFIG_PATH.parent / key_path
+
+    # 证书总是生成（即使 SSL 未启用），方便用户下载安装后再切 HTTPS
+    need_gen = False
+    if not cert_path.exists() or not key_path.exists():
+        print("[SSL] 证书文件不存在，自动生成...")
+        need_gen = True
+    else:
+        try:
+            first_line = cert_path.read_text(encoding="utf-8").strip().split("\n")[0]
+            if "PRIVATE KEY" in first_line:
+                print(f"[SSL] {ssl_cert} 是私钥不是证书，重新生成...")
+                cert_path.unlink()
+                key_path.unlink()
+                need_gen = True
+        except Exception:
+            pass
+
+    if need_gen:
+        generate_self_signed_cert(str(cert_path), str(key_path))
+
+    ssl_cert = str(cert_path.resolve())
+    ssl_key = str(key_path.resolve())
+
+    proto = "https" if use_ssl else "http"
+
+    ips = get_local_ips()
+    lan_ips = [ip for ip in ips if ip not in ("127.0.0.1", "localhost") and not ip.startswith("127.")]
 
     print("\n" + "=" * 60)
     print("  WhisperWeb Backend")
-    print(f"  http://{host}:{port}")
+    print(f"  {proto}://{host}:{port}")
+    if use_ssl:
+        print(f"  SSL 证书: {ssl_cert}")
+        for ip in lan_ips:
+            print(f"  手机访问: https://{ip}:{port}")
+    else:
+        print(f"  协议: HTTP (SSL 未启用)")
     print(f"  日志级别: DEBUG")
     print("=" * 60 + "\n")
 
@@ -420,4 +558,6 @@ if __name__ == "__main__":
         host=host,
         port=port,
         log_level="info",
+        ssl_certfile=ssl_cert if use_ssl else None,
+        ssl_keyfile=ssl_key if use_ssl else None,
     )

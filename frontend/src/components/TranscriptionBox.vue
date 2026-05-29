@@ -82,9 +82,10 @@ defineExpose({ appendText, setPartial, clearAll })
 
 <style scoped>
 .transcription-box {
-  background: #1e1e2e;
+  background: #fff;
   border-radius: 12px;
   padding: 20px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.08);
   flex: 1;
   display: flex;
   flex-direction: column;
@@ -96,11 +97,13 @@ defineExpose({ appendText, setPartial, clearAll })
   justify-content: space-between;
   align-items: center;
   margin-bottom: 12px;
+  flex-wrap: wrap;
+  gap: 8px;
 }
 
 .header h3 {
   margin: 0;
-  color: #cdd6f4;
+  color: #333;
   font-size: 16px;
 }
 
@@ -114,13 +117,13 @@ defineExpose({ appendText, setPartial, clearAll })
   font-size: 12px;
   padding: 3px 8px;
   border-radius: 10px;
-  background: #45475a;
-  color: #f38ba8;
+  background: #fce4ec;
+  color: #c62828;
 }
 
 .status.connected {
-  background: #314f30;
-  color: #a6e3a1;
+  background: #e8f5e9;
+  color: #2e7d32;
 }
 
 .btn-copy,
@@ -130,30 +133,31 @@ defineExpose({ appendText, setPartial, clearAll })
   border-radius: 4px;
   font-size: 12px;
   cursor: pointer;
-  background: #45475a;
-  color: #cdd6f4;
+  background: #e8e8e8;
+  color: #333;
 }
 
 .btn-copy:hover,
 .btn-clear:hover {
-  background: #585b70;
+  background: #d5d5d5;
 }
 
 .content {
   flex: 1;
-  background: #11111b;
+  background: #fafafa;
+  border: 1px solid #eee;
   border-radius: 8px;
   padding: 16px;
   overflow-y: auto;
   max-height: 400px;
   font-size: 16px;
   line-height: 1.8;
-  color: #cdd6f4;
+  color: #333;
   word-break: break-word;
 }
 
 .placeholder {
-  color: #585b70;
+  color: #bbb;
   font-style: italic;
 }
 
@@ -162,16 +166,15 @@ defineExpose({ appendText, setPartial, clearAll })
 }
 
 .confirmed {
-  color: #cdd6f4;
+  color: #333;
 }
 
 .partial {
-  color: #a6adc8;
-  opacity: 0.7;
+  color: #999;
 }
 
 .cursor {
-  color: #89b4fa;
+  color: #4a6cf7;
   animation: blink 1s step-end infinite;
 }
 
@@ -182,9 +185,21 @@ defineExpose({ appendText, setPartial, clearAll })
 .status-bar {
   margin-top: 10px;
   padding: 6px 12px;
-  background: #313244;
+  background: #f5f5f5;
   border-radius: 6px;
   font-size: 12px;
-  color: #a6adc8;
+  color: #888;
+}
+
+/* ─── 手机端 ─── */
+@media (max-width: 768px) {
+  .transcription-box {
+    min-height: 250px;
+    padding: 14px;
+  }
+  .content {
+    max-height: 300px;
+    font-size: 15px;
+  }
 }
 </style>

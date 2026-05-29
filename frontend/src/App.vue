@@ -54,7 +54,7 @@ function onStatusChange(msg) {
     processing.value = false
     wsConnected.value = false
   }
-  if (msg.includes('处理')) processing.value = true
+  if (msg.includes('处理') || msg.includes('录音')) processing.value = true
 }
 
 function onConfigChanged(config) {
@@ -73,38 +73,42 @@ function onConfigChanged(config) {
 }
 
 body {
-  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
-  background: #11111b;
-  color: #cdd6f4;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC',
+    'Hiragino Sans GB', 'Microsoft YaHei', 'Helvetica Neue', Helvetica, Arial,
+    sans-serif;
+  background: #f5f5f5;
+  color: #333;
   min-height: 100vh;
+  -webkit-font-smoothing: antialiased;
 }
 
 /* ─── App 布局 ─── */
 .app {
   max-width: 1200px;
   margin: 0 auto;
-  padding: 24px;
+  padding: 20px;
 }
 
 header {
   text-align: center;
-  margin-bottom: 24px;
+  margin-bottom: 20px;
 }
 
 header h1 {
-  font-size: 28px;
-  color: #89b4fa;
-  letter-spacing: 2px;
+  font-size: 26px;
+  color: #4a6cf7;
+  letter-spacing: 1px;
 }
 
 header .subtitle {
   font-size: 13px;
-  color: #585b70;
+  color: #999;
 }
 
 main {
   display: flex;
   gap: 20px;
+  align-items: flex-start;
 }
 
 .sidebar {
@@ -120,10 +124,19 @@ main {
   min-width: 0;
 }
 
-/* ─── 响应式 ─── */
+/* ─── 手机端响应式 ─── */
 @media (max-width: 768px) {
+  .app {
+    padding: 12px;
+  }
+
+  header h1 {
+    font-size: 22px;
+  }
+
   main {
     flex-direction: column;
+    gap: 12px;
   }
 
   .sidebar {
