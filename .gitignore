@@ -18,3 +18,7 @@ Thumbs.db
 
 # Env
 .env
+/backend/__pycache__
+/backend/models
+/frontend/node_modules
+/frontend/dist
