@@ -3,6 +3,7 @@ WhisperWeb 后端入口 - FastAPI + WebSocket 实时语音转写服务
 """
 import json
 import logging
+import os
 import socket
 import subprocess
 import sys
@@ -21,10 +22,7 @@ from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from transcriber import Transcriber
-from audio_processor import extract_audio_to_numpy, validate_media_file
-
-# ─── 日志配置 ────────────────────────────────────────────────
+# ─── 日志配置（必须在最早进行，确保后续日志能输出）────────────
 
 logging.basicConfig(
     level=logging.DEBUG,
@@ -40,6 +38,20 @@ logger = logging.getLogger("whisperweb")
 logging.getLogger("faster_whisper").setLevel(logging.INFO)
 logging.getLogger("uvicorn").setLevel(logging.INFO)
 logging.getLogger("urllib3").setLevel(logging.WARNING)
+
+# ─── 提前加载配置，设置 HF_ENDPOINT（必须在 import faster_whisper 之前）───
+# huggingface_hub 在 import 时读取 HF_ENDPOINT 环境变量，
+# 而 faster_whisper → huggingface_hub，所以必须在 import transcriber 之前设置。
+CONFIG_PATH = Path(__file__).parent / "config.yaml"
+with open(CONFIG_PATH, "r", encoding="utf-8") as _f:
+    _preload_config = yaml.safe_load(_f)
+_hf_endpoint = _preload_config.get("model", {}).get("hf_endpoint", "")
+if _hf_endpoint:
+    os.environ["HF_ENDPOINT"] = _hf_endpoint
+    logger.info(f"[INIT] HF_ENDPOINT 已设置为: {_hf_endpoint}")
+
+from transcriber import Transcriber
+from audio_processor import extract_audio_to_numpy, validate_media_file
 
 
 # ─── 请求日志中间件 ──────────────────────────────────────────
@@ -82,7 +94,6 @@ app.add_middleware(
 
 # ─── 全局状态 ────────────────────────────────────────────────
 
-CONFIG_PATH = Path(__file__).parent / "config.yaml"
 _config: dict = {}
 _transcriber: Optional[Transcriber] = None
 
@@ -93,6 +104,13 @@ def load_config() -> dict:
     with open(CONFIG_PATH, "r", encoding="utf-8") as f:
         _config = yaml.safe_load(f)
     model_cfg = _config.get("model", {})
+
+    # 更新 HF_ENDPOINT 环境变量（配置可能在运行中被修改）
+    _hf = model_cfg.get("hf_endpoint", "")
+    if _hf:
+        os.environ["HF_ENDPOINT"] = _hf
+        logger.info(f"[CFG] HF_ENDPOINT = {_hf}")
+
     logger.info(
         f"[CFG] model_path={model_cfg.get('model_path')}, "
         f"device={model_cfg.get('device')}, "
@@ -175,6 +193,16 @@ async def startup():
     dist_path = frontend_cfg.get("dist_path", "../frontend/dist")
     logger.info(f"[INIT] 前端文件: {Path(dist_path).resolve()}")
     logger.info("=" * 60)
+
+    # 预加载模型（避免首次请求时才加载，耗时很长）
+    logger.info("[INIT] 预加载 Whisper 模型...")
+    try:
+        get_transcriber()
+        logger.info("[INIT] ✅ 模型预加载完成")
+    except Exception as e:
+        logger.error(f"[INIT] ❌ 模型预加载失败: {e}")
+        logger.error(f"[INIT] {traceback.format_exc()}")
+        logger.warning("[INIT] 模型将在首次请求时按需加载")
 
 
 # ─── REST API ────────────────────────────────────────────────
@@ -312,18 +340,28 @@ async def websocket_transcribe(ws: WebSocket):
                     buffer_dur = len(audio_buffer) / target_sr
                     logger.info(f"[WS] 缓冲区达到阈值 ({buffer_dur:.1f}s)，触发转写")
                     t0 = time.time()
-                    text = transcriber.transcribe_chunk(audio_buffer, target_sr)
-                    elapsed = time.time() - t0
-                    audio_buffer = np.array([], dtype=np.float32)
-                    if text:
-                        logger.info(f"[WS] 转写结果 ({elapsed:.2f}s): \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
-                        await ws.send_json({
-                            "type": "transcription",
-                            "text": text,
-                            "partial": False,
-                        })
-                    else:
-                        logger.info(f"[WS] 转写结果为空 ({elapsed:.2f}s)")
+                    try:
+                        text = transcriber.transcribe_chunk(audio_buffer, target_sr)
+                        elapsed = time.time() - t0
+                        audio_buffer = np.array([], dtype=np.float32)
+                        if text:
+                            logger.info(f"[WS] 转写结果 ({elapsed:.2f}s): \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
+                            await ws.send_json({
+                                "type": "transcription",
+                                "text": text,
+                                "partial": False,
+                            })
+                        else:
+                            logger.info(f"[WS] 转写结果为空 ({elapsed:.2f}s)")
+                    except Exception as trans_err:
+                        elapsed = time.time() - t0
+                        logger.error(f"[WS] 转写失败 ({elapsed:.2f}s): {trans_err}")
+                        logger.error(f"[WS] {traceback.format_exc()}")
+                        audio_buffer = np.array([], dtype=np.float32)
+                        try:
+                            await ws.send_json({"type": "error", "message": f"转写失败: {str(trans_err)}"})
+                        except Exception:
+                            pass
 
             elif "text" in msg:
                 data = json.loads(msg["text"])
@@ -341,15 +379,24 @@ async def websocket_transcribe(ws: WebSocket):
                     logger.info(f"[WS] 收到结束信号，处理剩余 {len(audio_buffer)}/{total_samples} samples")
                     if len(audio_buffer) > 0:
                         t0 = time.time()
-                        text = transcriber.transcribe_chunk(audio_buffer, target_sr)
-                        elapsed = time.time() - t0
-                        if text:
-                            logger.info(f"[WS] 最终转写 ({elapsed:.2f}s): \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
-                            await ws.send_json({
-                                "type": "transcription",
-                                "text": text,
-                                "partial": False,
-                            })
+                        try:
+                            text = transcriber.transcribe_chunk(audio_buffer, target_sr)
+                            elapsed = time.time() - t0
+                            if text:
+                                logger.info(f"[WS] 最终转写 ({elapsed:.2f}s): \"{text[:100]}{'...' if len(text) > 100 else ''}\"")
+                                await ws.send_json({
+                                    "type": "transcription",
+                                    "text": text,
+                                    "partial": False,
+                                })
+                        except Exception as trans_err:
+                            elapsed = time.time() - t0
+                            logger.error(f"[WS] 最终转写失败 ({elapsed:.2f}s): {trans_err}")
+                            logger.error(f"[WS] {traceback.format_exc()}")
+                            try:
+                                await ws.send_json({"type": "error", "message": f"最终转写失败: {str(trans_err)}"})
+                            except Exception:
+                                pass
                     logger.info(f"[WS] 转写完成: {chunk_count} chunks, {total_samples / target_sr:.1f}s 音频")
                     await ws.send_json({"type": "status", "message": "转写完成"})
                     break
