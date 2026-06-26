@@ -91,7 +91,7 @@
 
       <label>
         后端地址
-        <input type="text" v-model="form.backend_url" placeholder="http://localhost:8765" />
+        <input type="text" v-model="form.backend_url" placeholder="https://192.168.3.2:9765" />
       </label>
     </div>
 

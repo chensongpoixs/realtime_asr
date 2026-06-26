@@ -258,6 +258,11 @@ async function startMicRecord() {
         noiseSuppression: true,
       }
     })
+      //micStream = await navigator.mediaDevices.getUserMedia({ audio: true });
+     // audioTrack = micStream.getAudioTracks()[0];
+     // settings = audioTrack.getSettings();
+     // micSampleRate = settings.sampleRate; // 这就是设备当前的采样率，如 48000
+    console.log(`麦克风实际采样率: ${micSampleRate}`);
 
     // 2. 连接 WebSocket
     emit('status-change', '正在连接服务器...')
@@ -292,11 +297,11 @@ async function startMicRecord() {
 
     // 获取实际采样率（手机端可能与理想值不同，需要适配）
     const actualSampleRate = micAudioCtx.sampleRate
+    // bufferSize 根据实际采样率调整：手机上保持约 256ms 的缓冲区
+    const bufferSize = Math.pow(2, Math.ceil(Math.log2(actualSampleRate * 0.25)))
     console.log('[Mic] 实际采样率:', actualSampleRate, ', 目标:', micSampleRate, ', bufferSize:', bufferSize)
 
     // 使用 ScriptProcessorNode 捕获原始 PCM
-    // bufferSize 根据实际采样率调整：手机上保持约 256ms 的缓冲区
-    const bufferSize = Math.pow(2, Math.ceil(Math.log2(actualSampleRate * 0.25)))
     micProcessor = micAudioCtx.createScriptProcessor(bufferSize, 1, 1)
 
     const sendInterval = actualSampleRate * (micChunkMs / 1000)
