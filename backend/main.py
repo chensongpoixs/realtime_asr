@@ -1,5 +1,5 @@
 """
-WhisperWeb 后端入口 - FastAPI + WebSocket 实时语音转写服务
+RealTime ASR 后端入口 - FastAPI + WebSocket 实时语音转写服务
 """
 import json
 import logging
@@ -32,7 +32,7 @@ logging.basicConfig(
         logging.StreamHandler(sys.stdout),
     ],
 )
-logger = logging.getLogger("whisperweb")
+logger = logging.getLogger("realtime_asr")
 
 # 降低第三方库日志级别
 logging.getLogger("faster_whisper").setLevel(logging.INFO)
@@ -81,7 +81,7 @@ class RequestLogMiddleware(BaseHTTPMiddleware):
             raise
 
 
-app = FastAPI(title="WhisperWeb Backend", version="1.0.0")
+app = FastAPI(title="RealTime ASR Backend", version="1.0.0")
 
 app.add_middleware(RequestLogMiddleware)
 app.add_middleware(
@@ -173,7 +173,7 @@ def get_transcriber() -> Transcriber:
 @app.on_event("startup")
 async def startup():
     logger.info("=" * 60)
-    logger.info("[INIT] WhisperWeb Backend 启动中...")
+    logger.info("[INIT] RealTime ASR Backend 启动中...")
     logger.info(f"[INIT] 启动时间: {datetime.now().isoformat()}")
     logger.info("=" * 60)
     load_config()
@@ -264,7 +264,7 @@ async def transcribe_file(file: UploadFile = File(...)):
     logger.info(f"[API]   文件大小: {file.size} bytes" if file.size else "[API]   文件大小: unknown")
 
     suffix = Path(file.filename).suffix or ".tmp"
-    tmp_path = Path("/tmp") / f"whisperweb_{file.filename}{suffix}"
+    tmp_path = Path("/tmp") / f"realtime_asr_{file.filename}{suffix}"
     try:
         content = await file.read()
         tmp_path.write_bytes(content)
@@ -481,7 +481,7 @@ def get_local_ips() -> list[str]:
 def generate_self_signed_cert(cert_path: str, key_path: str) -> bool:
     """生成带 SAN 的自签名证书，解决 iOS WSS 证书主机名不匹配问题"""
     ips = get_local_ips()
-    logger = logging.getLogger("whisperweb")
+    logger = logging.getLogger("realtime_asr")
 
     # 构建 SAN 扩展：DNS + IP
     san_entries = []
@@ -503,7 +503,7 @@ x509_extensions = v3_req
 prompt = no
 
 [req_distinguished_name]
-CN = WhisperWeb
+CN = RealTime ASR
 
 [v3_req]
 subjectAltName = {san_ext}
@@ -589,7 +589,7 @@ if __name__ == "__main__":
     lan_ips = [ip for ip in ips if ip not in ("127.0.0.1", "localhost") and not ip.startswith("127.")]
 
     print("\n" + "=" * 60)
-    print("  WhisperWeb Backend")
+    print("  RealTime ASR Backend")
     print(f"  {proto}://{host}:{port}")
     if use_ssl:
         print(f"  SSL 证书: {ssl_cert}")

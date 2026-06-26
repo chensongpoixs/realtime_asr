@@ -1,7 +1,7 @@
 <template>
   <div class="app">
     <header>
-      <h1>WhisperWeb</h1>
+      <h1>RealTime ASR</h1>
       <span class="subtitle">实时语音转文字</span>
     </header>
 

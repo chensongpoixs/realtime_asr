@@ -1,4 +1,4 @@
-# WhisperWeb 开发文档
+# RealTime ASR 开发文档
 
 ## 项目概述
 
@@ -18,7 +18,7 @@
 ## 项目目录结构
 
 ```
-whisperweb/
+realtime_asr/
 ├── DEVELOPMENT_PLAN.md       # 本开发文档
 ├── backend/
 │   ├── requirements.txt      # Python 依赖

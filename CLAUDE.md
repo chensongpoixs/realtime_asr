@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project Overview
 
-WhisperWeb is a real-time speech-to-text system: a browser-based UI streams audio (file or microphone) over WebSocket to a Python backend running faster-whisper, which returns transcription results in real time. Supports Chinese, English, Japanese, and Korean.
+RealTime ASR is a real-time speech-to-text system: a browser-based UI streams audio (file or microphone) over WebSocket to a Python backend running faster-whisper, which returns transcription results in real time. Supports Chinese, English, Japanese, and Korean.
 
 ## Commands
 

@@ -8,7 +8,7 @@ import time
 import numpy as np
 from faster_whisper import WhisperModel
 
-logger = logging.getLogger("whisperweb")
+logger = logging.getLogger("realtime_asr")
 
 
 class Transcriber:
