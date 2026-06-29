@@ -1,0 +1,38 @@
+# ═══════════════════════════════════════════════════════════════
+# RealTime ASR v2.0 配置文件 (Triton Inference Server)
+# ═══════════════════════════════════════════════════════════════
+
+# ─── Triton Inference Server ─────────────────────────────────
+triton:
+  url: localhost:8001              # gRPC 端点 (默认 8001)
+  model_name: whisper_large_v3     # Triton 模型仓库中的模型名
+  model_version: "1"               # 模型版本号
+  timeout: 5.0                     # 单次推理超时 (秒)
+  max_retries: 3                   # 瞬态错误重试次数
+  health_check_interval: 30        # 后台健康检查间隔 (秒)
+
+# ─── 转录参数 ───────────────────────────────────────────────
+transcription:
+  buffer_threshold: 1.0            # 触发转写的音频缓冲阈值 (秒)
+  language: zh                     # 语言: zh, en, ja, ko, auto
+  beam_size: 5                     # Beam search 宽度
+  task: transcribe                 # transcribe | translate
+  sample_rate: 16000               # 音频采样率
+
+# ─── 服务器配置 ─────────────────────────────────────────────
+server:
+  host: 0.0.0.0                    # 绑定地址
+  port: 9766                       # 服务端口 (与 v1 的 9765 不冲突)
+  ssl_enabled: true                # 是否启用 HTTPS/WSS
+  ssl_cert: ./fullchain.pem        # SSL 证书路径 (与 v1 共享)
+  ssl_key: ./privkey.pem           # SSL 私钥路径 (与 v1 共享)
+
+# ─── 前端托管 ───────────────────────────────────────────────
+frontend:
+  dist_path: ../frontend/dist      # 前端构建目录 (相对于 backend/)
+
+# ─── 模型文件 (仅用于 tokenizer + mel filterbank) ──────────
+model:
+  model_path: large-v3             # 模型名称 (定位 tokenizer 文件)
+  download_root: ../../models/whisper  # 模型下载缓存目录
+  hf_endpoint: https://hf-mirror.com  # HuggingFace 镜像 (国内加速)

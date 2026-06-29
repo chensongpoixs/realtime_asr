@@ -133,3 +133,83 @@ backend/
 - `ERROR` — 模型加载失败、转写异常、ffmpeg 执行失败等需要关注的错误
 
 每次转写都会记录：音频时长、sample 数、检测语言、segment 数、耗时、实时率。
+
+---
+
+## v2.0 — Triton Inference Server 高并发版本
+
+v2.0 是实时转写的高并发版本，使用 **Triton Inference Server + ONNX Runtime + TensorRT FP16** 替代 faster-whisper，通过异步非阻塞架构 + dynamic batching 支持 **80-100 路**并发流式转写。
+
+### 架构对比
+
+| 维度 | v1.0 | v2.0 |
+|------|------|------|
+| 推理引擎 | faster-whisper (CTranslate2) | Triton + ONNX Runtime + TensorRT FP16 |
+| 调用方式 | 同步阻塞 (event loop 被卡死) | 异步非阻塞 (`asyncio.create_task`) |
+| 批处理 | 无 | Dynamic batching (50ms 窗口, max 32 batch) |
+| GPU 实例 | 1 个模型 | 2 个 GPU 实例 (轮询) |
+| 最大并发 | 1-2 路 | 80-100 路 |
+| 默认端口 | 9765 | 9766 |
+
+### v2.0 新增文件
+
+```
+backend/
+├── config_v2.yaml                        # v2 独立配置 (Triton URL, 端口 9766)
+├── requirements_v2.txt                   # v2 额外依赖 (tritonclient[grpc])
+├── run_v2.py                             # v2 启动入口
+├── app/
+│   ├── main_v2.py                        # FastAPI v2 应用工厂
+│   ├── api/
+│   │   └── transcribe_v2.py              # 异步非阻塞 WebSocket handler
+│   └── services/
+│       └── transcriber_v2.py             # Triton gRPC 异步转写引擎
+├── scripts/
+│   ├── export_whisper_to_onnx.py         # Whisper → ONNX 导出脚本
+│   └── start_triton_server.sh            # Triton Server Docker 启动脚本
+└── triton_model_repo/
+    ├── mel_filters.npy                   # Mel filterbank (导出产物)
+    ├── whisper_encoder/
+    │   ├── config.pbtxt                  # Encoder Triton 配置
+    │   └── 1/model.onnx                  # Encoder ONNX 模型
+    └── whisper_decoder/
+        ├── config.pbtxt                  # Decoder Triton 配置
+        └── 1/model.onnx                  # Decoder ONNX 模型
+```
+
+### v2.0 命令
+
+```bash
+# ─── 一次性: 导出 ONNX 模型 ───
+cd realtime_asr/backend
+pip install torch torchaudio onnx onnxruntime-gpu openai-whisper
+python scripts/export_whisper_to_onnx.py --model large-v3
+
+# ─── 启动 Triton Inference Server ───
+bash scripts/start_triton_server.sh
+
+# ─── 安装 v2 依赖 ───
+pip install -r requirements_v2.txt
+
+# ─── 启动 v2 后端 ───
+python run_v2.py                     # → :9766
+python run_v2.py --port 8080         # 指定端口
+
+# ─── v1 和 v2 可同时运行 ───
+python run.py                        # v1.0 → :9765
+python run_v2.py                     # v2.0 → :9766
+```
+
+### v2.0 关键技术点
+
+- **Triton 通信**: `tritonclient.grpc.aio.InferenceServerClient` — HTTP/2 多路复用
+- **音频预处理**: Python 端 NumPy FFT → log-mel spectrogram (80-bin)，发送 mel 到 Triton
+- **非阻塞并发**: `asyncio.create_task()` 后台转写，WebSocket receive loop 永不阻塞
+- **Encoder dynamic batching**: `max_queue_delay=50000μs` (50ms)，Triton 自动聚合请求
+- **Decoder dynamic batching**: `max_queue_delay=10000μs` (10ms)，延迟更敏感
+- **TensorRT FP16**: ~2x 加速，精度损失 <0.5%
+- **版本共存**: v1 文件零改动，v2 全部新建文件
+
+### 详细文档
+
+完整的部署指南、性能调优、故障排查见: [`docs/TRITON_DEPLOYMENT.md`](docs/TRITON_DEPLOYMENT.md)

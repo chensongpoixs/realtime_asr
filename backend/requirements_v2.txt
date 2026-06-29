@@ -1,0 +1,23 @@
+# ═══════════════════════════════════════════════════════════════
+# RealTime ASR v2.0 额外 Python 依赖
+# 安装: pip install -r requirements_v2.txt
+# ═══════════════════════════════════════════════════════════════
+
+# Triton Inference Server 客户端 (gRPC async)
+tritonclient[grpc]>=2.40.0
+
+# ONNX 运行时 (GPU 推理, TensorRT execution provider)
+onnxruntime-gpu>=1.16.0
+
+# ONNX 模型验证 (导出脚本使用)
+onnx>=1.14.0
+
+# 音频处理 (mel-spectrogram, 运行时依赖 torchaudio 或 numpy)
+numpy>=1.24.0
+
+# Whisper tokenizer + mel filterbank 提取 (导出 + 运行时)
+openai-whisper>=20231117
+
+# ONNX 导出依赖 (一次性, 运行时不需要)
+torch>=2.0.0
+torchaudio>=2.0.0

@@ -1,0 +1,79 @@
+# Triton Inference Server Model Configuration
+# Whisper Decoder — ONNX Runtime + TensorRT FP16
+#
+# 功能: 自回归生成下一个 token 的 logits
+# Inputs:
+#   tokens:          (batch, seq_len)          — 当前 token 序列 (INT64)
+#   encoder_output:  (batch, n_frames, d_model) — encoder 输出 (FP32)
+# Output:
+#   logits:          (batch, seq_len, vocab_size) — 每位置的 token 概率 (FP32)
+#
+# 注意: Decoder 是延迟敏感型模型，queue delay 设为 10ms (低于 Encoder 的 50ms)
+
+name: "whisper_decoder"
+backend: "onnxruntime"
+max_batch_size: 32
+
+# ─── Dynamic Batching ───────────────────────────────────────
+# 10ms 窗口: decoder 每步延迟敏感，但仍有 batching 机会
+# (100 用户同时进行 decoder 推理时，10ms 内平均有 ~10 个请求)
+dynamic_batching {
+  max_queue_delay_microseconds: 10000
+  preferred_batch_size: [ 2, 4, 8 ]
+}
+
+# ─── Input / Output ────────────────────────────────────────
+
+input [
+  {
+    name: "tokens"
+    data_type: TYPE_INT64
+    dims: [ -1 ]              # 可变 token 序列长度
+  },
+  {
+    name: "encoder_output"
+    data_type: TYPE_FP32
+    dims: [ -1, 1280 ]        # 可变帧数, d_model=1280
+  }
+]
+
+output [
+  {
+    name: "logits"
+    data_type: TYPE_FP32
+    dims: [ -1, 51865 ]       # 可变 token 位置, vocab_size=51865 (large-v3)
+  }
+]
+
+# ─── 优化配置 ──────────────────────────────────────────────
+
+optimization {
+  # TensorRT Execution Provider (FP16)
+  execution_accelerators {
+    gpu_execution_accelerator: [
+      {
+        name: "tensorrt"
+        parameters: { key: "precision_mode", value: "FP16" }
+        parameters: { key: "max_workspace_size_bytes", value: "1073741824" }
+      }
+    ]
+  }
+
+  input_pinned_memory {
+    enable: true
+  }
+
+  output_pinned_memory {
+    enable: true
+  }
+}
+
+# ─── GPU 实例 ──────────────────────────────────────────────
+
+instance_group [
+  {
+    count: 2
+    kind: KIND_GPU
+    gpus: [ 0 ]
+  }
+]

@@ -1,0 +1,79 @@
+# Triton Inference Server Model Configuration
+# Whisper Encoder — ONNX Runtime + TensorRT FP16
+#
+# 功能: 将 mel spectrogram 编码为 hidden states
+# Input:  mel (batch, 80, n_frames)
+# Output: encoder_output (batch, n_frames//2, d_model)
+#
+# Dynamic batching 合并多个并发请求，提升 GPU 利用率。
+# 2 个 GPU 实例实现轮询负载均衡。
+
+name: "whisper_encoder"
+backend: "onnxruntime"
+max_batch_size: 32
+
+# ─── Dynamic Batching ───────────────────────────────────────
+# 50ms 批处理窗口适合实时转写场景:
+# - 100 并发流，每 1s 发一次请求 → 平均 100 req/s
+# - 50ms 窗口内平均到达 5 个请求 → batch_size=5
+# - 比单请求推理快 ~3x (共享权重加载)
+dynamic_batching {
+  max_queue_delay_microseconds: 50000
+  preferred_batch_size: [ 2, 4, 8, 16 ]
+}
+
+# ─── Input / Output ────────────────────────────────────────
+
+input [
+  {
+    name: "mel"
+    data_type: TYPE_FP32
+    dims: [ 80, -1 ]          # 80 mel bins, 可变时间帧数
+  }
+]
+
+output [
+  {
+    name: "encoder_output"
+    data_type: TYPE_FP32
+    dims: [ -1, 1280 ]        # 可变帧数, d_model=1280 (large-v3)
+                               # medium: 1024, small: 768, base: 512, tiny: 384
+  }
+]
+
+# ─── 优化配置 ──────────────────────────────────────────────
+
+optimization {
+  # TensorRT Execution Provider
+  execution_accelerators {
+    gpu_execution_accelerator: [
+      {
+        name: "tensorrt"
+        parameters: { key: "precision_mode", value: "FP16" }
+        parameters: { key: "max_workspace_size_bytes", value: "2147483648" }
+      }
+    ]
+  }
+
+  # 输入 pinned memory (加速 CPU→GPU 传输)
+  input_pinned_memory {
+    enable: true
+  }
+
+  # 输出 pinned memory
+  output_pinned_memory {
+    enable: true
+  }
+}
+
+# ─── GPU 实例 ──────────────────────────────────────────────
+
+# 2 个实例: 当一个实例在计算时，另一个可以接收新请求
+# GPU 0 上同时运行 (共享显存，串行执行)
+instance_group [
+  {
+    count: 2
+    kind: KIND_GPU
+    gpus: [ 0 ]
+  }
+]
