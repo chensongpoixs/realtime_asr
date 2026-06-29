@@ -30,16 +30,16 @@ class Transcriber:
             return
 
         logger.info("[MODEL] ========== 开始加载模型 ==========")
-        logger.info(f"[MODEL]   model_path   = {self.model_path}")
-        logger.info(f"[MODEL]   device       = {self.device}")
-        logger.info(f"[MODEL]   compute_type = {self.compute_type}")
-        logger.info(f"[MODEL]   download_root= {self.download_root}")
-        logger.info(f"[MODEL]   HF_ENDPOINT  = {os.environ.get('HF_ENDPOINT', '(未设置)')}")
-        logger.info(f"[MODEL]   language     = {self.language}")
+        logger.info("[MODEL]   model_path   = %s", self.model_path)
+        logger.info("[MODEL]   device       = %s", self.device)
+        logger.info("[MODEL]   compute_type = %s", self.compute_type)
+        logger.info("[MODEL]   download_root= %s", self.download_root)
+        logger.info("[MODEL]   HF_ENDPOINT  = %s", os.environ.get("HF_ENDPOINT", "(未设置)"))
+        logger.info("[MODEL]   language     = %s", self.language)
 
         if self.hf_endpoint:
             os.environ["HF_ENDPOINT"] = self.hf_endpoint
-            logger.info(f"[MODEL]   使用 HuggingFace 镜像: {self.hf_endpoint}")
+            logger.info("[MODEL]   使用 HuggingFace 镜像: %s", self.hf_endpoint)
 
         t0 = time.time()
         logger.info("[MODEL]   正在创建 WhisperModel 实例...")
@@ -49,7 +49,7 @@ class Transcriber:
             compute_type=self.compute_type,
             download_root=self.download_root
         )
-        logger.info(f"[MODEL] ✅ 模型加载完成 ({time.time() - t0:.1f}s)")
+        logger.info("[MODEL] ✅ 模型加载完成 (%.1fs)", time.time() - t0)
 
     @property
     def model(self) -> WhisperModel:
@@ -70,24 +70,22 @@ class Transcriber:
             audio = audio.mean(axis=1)
 
         audio_dur = len(audio) / sample_rate
-        logger.info(f"[MODEL] 开始转写: {audio_dur:.1f}s 音频, {len(audio)} samples, sr={sample_rate}")
+        logger.info("[MODEL] 开始转写: %.1fs 音频, %d samples, sr=%d", audio_dur, len(audio), sample_rate)
 
         lang = None if self.language == "auto" else self.language
-        logger.debug(f"[MODEL]   参数: language={lang or 'auto'}, beam_size=5, vad_filter=True")
+        logger.debug("[MODEL]   参数: language=%s, beam_size=5, vad_filter=True", lang or 'auto')
 
         segments, info = self.model.transcribe(
             audio, language=lang,
             beam_size=5, vad_filter=True
         )
-        logger.debug(f"[MODEL]   检测语言: {info.language} (概率: {info.language_probability:.2f})")
+        logger.debug("[MODEL]   检测语言: %s (概率: %.2f)", info.language, info.language_probability)
 
         texts = [seg.text.strip() for seg in segments]
         result = " ".join(texts)
 
-        logger.info(f"[MODEL] 转写完成 ({time.time() - t0:.1f}s): "
-                    f"语言={info.language}, "
-                    f"段数={len(texts)}, "
-                    f"文本长度={len(result)}")
+        logger.info("[MODEL] 转写完成 (%.1fs): 语言=%s, 段数=%d, 文本长度=%d",
+                    time.time() - t0, info.language, len(texts), len(result))
 
         return result
 
@@ -98,27 +96,27 @@ class Transcriber:
         logger.info("[MODEL] 检查配置更新...")
         need_reload = False
         if model_path and model_path != self.model_path:
-            logger.info(f"[MODEL]   model_path 变更: {self.model_path} -> {model_path}")
+            logger.info("[MODEL]   model_path 变更: %s -> %s", self.model_path, model_path)
             self.model_path = model_path
             need_reload = True
         if device and device != self.device:
-            logger.info(f"[MODEL]   device 变更: {self.device} -> {device}")
+            logger.info("[MODEL]   device 变更: %s -> %s", self.device, device)
             self.device = device
             need_reload = True
         if compute_type and compute_type != self.compute_type:
-            logger.info(f"[MODEL]   compute_type 变更: {self.compute_type} -> {compute_type}")
+            logger.info("[MODEL]   compute_type 变更: %s -> %s", self.compute_type, compute_type)
             self.compute_type = compute_type
             need_reload = True
         if download_root and download_root != self.download_root:
-            logger.info(f"[MODEL]   download_root 变更: {self.download_root} -> {download_root}")
+            logger.info("[MODEL]   download_root 变更: %s -> %s", self.download_root, download_root)
             self.download_root = download_root
             need_reload = True
         if hf_endpoint is not None and hf_endpoint != self.hf_endpoint:
-            logger.info(f"[MODEL]   hf_endpoint 变更: {self.hf_endpoint} -> {hf_endpoint}")
+            logger.info("[MODEL]   hf_endpoint 变更: %s -> %s", self.hf_endpoint, hf_endpoint)
             self.hf_endpoint = hf_endpoint
             need_reload = True
         if language is not None:
-            logger.info(f"[MODEL]   language 变更: {self.language} -> {language}")
+            logger.info("[MODEL]   language 变更: %s -> %s", self.language, language)
             self.language = language
 
         if need_reload:

@@ -19,20 +19,38 @@
 
 ```
 realtime_asr/
-├── DEVELOPMENT_PLAN.md       # 本开发文档
+├── README.md                  # 项目文档
+├── CLAUDE.md                  # Claude Code 项目指南
+├── DEVELOPMENT_PLAN.md        # 本开发文档
 ├── backend/
-│   ├── requirements.txt      # Python 依赖
-│   ├── config.yaml           # 模型路径等配置文件
-│   ├── main.py               # FastAPI 入口，WebSocket/HTTP 路由
-│   ├── transcriber.py        # Whisper 模型封装，转写逻辑
-│   └── audio_processor.py    # 音视频处理（ffmpeg 提取音频）
+│   ├── run.py                 # ★ 启动入口（推荐）
+│   ├── main.py                # 向后兼容层
+│   ├── config.yaml            # 全局配置文件
+│   ├── requirements.txt       # Python 依赖
+│   │
+│   └── app/                   # 工程化目录
+│       ├── main.py            # FastAPI 应用 + 中间件 + 生命周期 + SPA
+│       ├── api/               # 路由处理层
+│       │   ├── router.py      # 统一路由注册
+│       │   ├── health.py      # GET  /api/health
+│       │   ├── config.py      # GET/POST /api/config
+│       │   └── transcribe.py  # POST /api/transcribe/file + WS /ws/transcribe
+│       ├── core/              # 核心配置层
+│       │   ├── config.py      # YAML 加载/保存 + HF_ENDPOINT
+│       │   └── logger.py      # 日志初始化
+│       ├── services/          # 业务逻辑层
+│       │   ├── transcriber.py # Whisper 模型封装
+│       │   └── audio_processor.py  # ffmpeg 音频处理
+│       └── utils/             # 工具层
+│           └── ssl_utils.py   # SSL 证书生成 + IP 检测
+│
 ├── frontend/
 │   ├── index.html
 │   ├── package.json
 │   ├── vite.config.js
 │   └── src/
-│       ├── main.js           # Vue 入口
-│       ├── App.vue           # 根组件 + 整体布局
+│       ├── main.js            # Vue 入口
+│       ├── App.vue            # 根组件 + 整体布局
 │       ├── components/
 │       │   ├── ConfigPanel.vue         # 模型路径配置面板
 │       │   ├── FileUpload.vue          # 文件上传组件
@@ -48,9 +66,11 @@ realtime_asr/
 ### 步骤 1：后端基础搭建 ✅
 - [x] 创建 `backend/requirements.txt`
 - [x] 创建 `backend/config.yaml` - 模型路径/设备/计算类型等配置
-- [x] 实现 `backend/transcriber.py` - Whisper 模型加载、音频段转写
-- [x] 实现 `backend/audio_processor.py` - 音视频文件音频提取
-- [x] 实现 `backend/main.py` - FastAPI 应用、WebSocket 端点、REST API
+- [x] 实现 `backend/app/services/transcriber.py` - Whisper 模型加载、音频段转写
+- [x] 实现 `backend/app/services/audio_processor.py` - 音视频文件音频提取
+- [x] 实现 `backend/app/main.py` - FastAPI 应用、WebSocket 端点、REST API
+- [x] 实现 `backend/run.py` - 启动入口（SSL 证书、HF_ENDPOINT 预处理）
+- [x] 工程化拆分：api/core/services/utils 四层目录结构
 
 ### 步骤 2：前端基础搭建 ✅
 - [x] 创建 `frontend/package.json`
@@ -70,9 +90,10 @@ realtime_asr/
 - [x] 后端 Python 语法验证通过
 - [x] 前端 Vite build 构建通过
 - [x] 环境检查（ffmpeg 已就绪）
-- [ ] 启动后端服务 `python backend/main.py`
-- [ ] 启动前端 `npm run dev`（frontend 目录）
-- [ ] 浏览器打开 http://localhost:5173 测试
+- [x] 启动后端服务 `python backend/run.py`
+- [x] 启动前端 `npm run dev`（frontend 目录）
+- [x] 浏览器打开 http://localhost:5173 测试
+- [x] 后端工程化重构完成（api/core/services/utils 四层结构）
 
 ---
 

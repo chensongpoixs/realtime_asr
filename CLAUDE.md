@@ -9,11 +9,15 @@ RealTime ASR is a real-time speech-to-text system: a browser-based UI streams au
 ## Commands
 
 ```bash
-# Backend (run from repo root)
-python backend/main.py                     # Start server on port 9765
-pip install -r backend/requirements.txt    # Install Python dependencies
+# Backend
+cd realtime_asr/backend
+pip install -r requirements.txt
+python run.py                      # ★ 启动服务 → :9765
+python run.py --port 8080          # 指定端口
 
 # Frontend (run from frontend/ directory)
+cd realtime_asr/frontend
+npm install
 npm run dev        # Vite dev server on :5173 (proxies /ws and /api to backend)
 npm run build      # Production build → frontend/dist/
 npm run preview    # Preview production build
@@ -38,10 +42,42 @@ Browser (FileUpload or mic) ──WebSocket──▶ backend/main.py
 
 ### Backend (`backend/`)
 
-- **`main.py`** — FastAPI app entry point. Registers middleware (CORS, request logging), REST routes (`/api/config`, `/api/health`, `/api/transcribe/file`), and the WebSocket endpoint `/ws/transcribe`. On startup loads `config.yaml`, shares a global `Transcriber` singleton. At the bottom of the file: uvicorn launch with optional SSL, and self-signed certificate generation (with SANs for LAN IPs) for mobile WSS access.
-- **`transcriber.py`** — Wraps `faster_whisper.WhisperModel`. `Transcriber.transcribe_chunk(audio: np.float32, sr=16000) → str` handles dtype conversion, mono downmix, language selection, and VAD filtering. `update_config()` detects which params changed and reloads the model only when necessary.
-- **`audio_processor.py`** — Shells out to ffmpeg: extracts 16kHz mono s16le PCM from any media file, returns `np.float32` normalized to [-1, 1]. Also provides `validate_media_file()` via ffprobe.
-- **`config.yaml`** — All runtime configuration: model path/device/compute_type, language, buffer threshold, server host/port/SSL settings, frontend dist path, HuggingFace mirror endpoint.
+工程化目录结构（参照 realtime_rag 模式）：
+
+```
+backend/
+├── run.py                     # ★ 启动入口（替代 python main.py）
+├── main.py                    # 向后兼容层：from app.main import app
+├── config.yaml                # 全局配置文件
+├── requirements.txt
+├── app/
+│   ├── main.py                # FastAPI app 创建 + 生命周期 + 组件初始化 + SPA 回退
+│   ├── api/                   # ── 路由处理层 ──
+│   │   ├── router.py          # 统一路由注册
+│   │   ├── health.py          # GET  /api/health
+│   │   ├── config.py          # GET/POST /api/config
+│   │   └── transcribe.py      # POST /api/transcribe/file + WS /ws/transcribe
+│   ├── core/                  # ── 核心配置层 ──
+│   │   ├── config.py          # YAML 加载/保存 + HF_ENDPOINT 预设置
+│   │   └── logger.py          # 日志初始化
+│   ├── services/              # ── 业务逻辑层 ──
+│   │   ├── transcriber.py     # Whisper 模型封装 (faster-whisper)
+│   │   └── audio_processor.py # ffmpeg 音频提取 + 验证
+│   └── utils/                 # ── 工具层 ──
+│       └── ssl_utils.py       # SSL 自签名证书生成 + 本机 IP 检测
+```
+
+**核心模块说明：**
+- **`run.py`** — 启动入口：预读 YAML 设置 HF_ENDPOINT → SSL 证书检查 → uvicorn 启动
+- **`app/main.py`** — FastAPI app 创建、中间件（CORS + 请求日志）、生命周期、SPA 回退
+- **`app/api/transcribe.py`** — WebSocket `/ws/transcribe` (二进制 PCM 累积→阈值触发转写) + REST 文件转写
+- **`app/services/transcriber.py`** — `Transcriber` 类封装 faster_whisper，支持热重载（`update_config()` 检测参数变更）
+- **`app/services/audio_processor.py`** — `extract_audio_to_numpy()` + `validate_media_file()`（subprocess 调用 ffmpeg/ffprobe）
+- **`app/utils/ssl_utils.py`** — 自签名证书生成（含 LAN IP SAN，支持 iOS WSS）
+- **`config.yaml`** — 模型路径/设备/语言/buffer阈值/SSL/前端路径等全部配置
+
+**⚠️ 关键约束：** `HF_ENDPOINT` 必须在 `import faster_whisper` 之前设置。
+`run.py` 在导入任何 app 模块前预读 YAML 并设置 `os.environ["HF_ENDPOINT"]`。
 
 ### Frontend (`frontend/`)
 

@@ -2,7 +2,6 @@
 音视频处理：利用 ffmpeg 提取音频流
 """
 import subprocess
-import tempfile
 import numpy as np
 from pathlib import Path
 
