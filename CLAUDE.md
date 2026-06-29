@@ -105,3 +105,31 @@ backend/
 - **SSL for mobile:** Mobile browsers require HTTPS/WSS for `getUserMedia`. The backend auto-generates a self-signed certificate with Subject Alternative Names for all detected LAN IPs, enabling phone access. Users must accept the cert warning on first visit.
 - **Model hot-reload:** Changing model_path or device via the config panel triggers `Transcriber.update_config()`, which sets `_model = None` and reloads on next use. This means the next transcription request will block while the model loads.
 - **vConsole:** The frontend unconditionally instantiates vConsole (`src/main.js:6`) for mobile debugging. Remove or condition it for production use.
+
+### 日志系统
+
+日志格式统一为 `HH:MM:SS | LEVEL | logger_name | message`，通过 `[TAG]` 前缀区分模块来源：
+
+| 标签 | 含义 | 使用模块 |
+|------|------|----------|
+| `[BOOT]` | 启动过程 | `run.py` |
+| `[INIT]` | 初始化和生命周期 | `app/main.py` (startup/shutdown) |
+| `[CFG]` | 配置加载/保存 | `app/core/config.py`, `app/api/config.py` |
+| `[REQ]` | HTTP 请求接收 | `app/main.py` (RequestLogMiddleware) |
+| `[RES]` | HTTP 响应返回 | `app/main.py` (RequestLogMiddleware) |
+| `[ERR]` | 请求处理异常 | `app/main.py` (RequestLogMiddleware) |
+| `[API]` | REST API 操作 | `app/api/health.py`, `app/api/config.py`, `app/api/transcribe.py` |
+| `[WS]` | WebSocket 连接/通信 | `app/api/transcribe.py` |
+| `[MODEL]` | 模型加载/推理 | `app/services/transcriber.py` |
+| `[AUDIO]` | 音频处理 (ffmpeg) | `app/services/audio_processor.py` |
+| `[SSL]` | SSL 证书操作 | `app/utils/ssl_utils.py` |
+| `[SPA]` | 前端 SPA 回退 | `app/main.py` |
+| `[SEC]` | 安全检查 | `app/main.py` |
+
+日志级别约定：
+- `DEBUG` — 每个音频 chunk 接收、SPA 回退、静态文件请求等高频事件
+- `INFO` — 连接建立/关闭、转写请求/完成、模型加载步骤、配置变更等关键操作
+- `WARNING` — 配置缺失、SSL 证书类型错误等可恢复异常
+- `ERROR` — 模型加载失败、转写异常、ffmpeg 执行失败等需要关注的错误
+
+每次转写都会记录：音频时长、sample 数、检测语言、segment 数、耗时、实时率。
