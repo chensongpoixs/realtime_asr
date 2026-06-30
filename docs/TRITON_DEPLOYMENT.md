@@ -150,21 +150,45 @@ triton_model_repo/
 
 ### Step 3: 启动 Triton Inference Server
 
+启动脚本 `scripts/start_triton_server.sh` 支持两种运行模式：
+
+#### 模式 A: Docker 容器（推荐，默认）
+
 ```bash
-# 使用提供的启动脚本
+# 默认启动 (使用所有 GPU)
 bash scripts/start_triton_server.sh
 
-# 或手动执行 Docker:
-docker run --rm --gpus all \
-  --name triton_whisper \
-  -p 8000:8000 -p 8001:8001 -p 8002:8002 \
-  -v "$(pwd)/triton_model_repo:/models" \
-  nvcr.io/nvidia/tritonserver:24.01-py3 \
-  tritonserver \
-    --model-repository=/models \
-    --log-verbose=1 \
-    --strict-model-config=false
+# 指定 GPU 和端口
+bash scripts/start_triton_server.sh --gpu 0 --port 8001
 ```
+
+**前置条件**: Docker + NVIDIA Container Toolkit (`nvidia-docker2`)
+
+#### 模式 B: Native Linux (直接在宿主机运行)
+
+```bash
+# 直接在 Linux 宿主机运行
+bash scripts/start_triton_server.sh --mode native
+
+# 指定 GPU
+bash scripts/start_triton_server.sh --mode native --gpu 0 --port 8001
+```
+
+**前置条件**: `tritonserver` 已安装并在 PATH 中。
+- 从 [Triton GitHub Releases](https://github.com/triton-inference-server/server/releases) 下载
+- 或通过 NGC: `pip install tritonclient[all]` 安装客户端后单独获取 server 二进制
+
+**两种模式差异**:
+
+| | Docker 模式 | Native 模式 |
+|------|------------|------------|
+| 启动方式 | `docker run` | `nohup tritonserver &` |
+| 日志查看 | `docker logs -f triton_whisper` | `tail -f triton.log` |
+| 停止服务 | `docker stop triton_whisper` | `kill $(cat triton.pid)` |
+| PID 文件 | 无（通过容器名管理） | `triton.pid`（自动保存） |
+| GPU 指定 | `--gpus "device=0"` | `CUDA_VISIBLE_DEVICES=0` |
+| 隔离性 | ✅ 容器隔离 | ❌ 直接占用宿主机端口 |
+| 适用场景 | 生产环境 / CI | 开发调试 / 无 Docker 环境 |
 
 验证 Triton 启动成功：
 ```bash
@@ -573,3 +597,242 @@ realtime_asr/
 - [ONNX Runtime with TensorRT](https://onnxruntime.ai/docs/execution-providers/TensorRT-ExecutionProvider.html)
 - [OpenAI Whisper](https://github.com/openai/whisper)
 - [faster-whisper](https://github.com/SYSTRAN/faster-whisper)
+
+### 9.3 Whisper → ONNX → TensorRT 引擎导出原理
+
+#### 9.3.1 整体流程
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                    Whisper 模型导出管线                           │
+│                                                                   │
+│  openai/whisper (PyTorch)                                         │
+│       │                                                           │
+│       │ ① 提取权重 + 结构                                         │
+│       ▼                                                           │
+│  ┌──────────────┐   ┌──────────────┐                             │
+│  │   Encoder    │   │   Decoder    │                             │
+│  │  (AudioEncoder)│  │ (TextDecoder)│                             │
+│  │              │   │              │                             │
+│  │ conv1+conv2  │   │ token_embed  │                             │
+│  │ positional   │   │ positional   │                             │
+│  │ transformer  │   │ transformer  │                             │
+│  │ layer_norm   │   │ layer_norm   │                             │
+│  └──────┬───────┘   └──────┬───────┘                             │
+│         │                  │                                      │
+│         │ ② torch.onnx.export()                                   │
+│         │    (TorchScript exporter, dynamo=False)                 │
+│         ▼                  ▼                                      │
+│  ┌──────────────┐   ┌──────────────┐                             │
+│  │ encoder.onnx │   │ decoder.onnx │                             │
+│  │  ~1.2 GB     │   │  ~800 MB     │                             │
+│  └──────┬───────┘   └──────┬───────┘                             │
+│         │                  │                                      │
+│         │ ③ Triton onnxruntime_onnx backend                      │
+│         │    + TensorRT Execution Provider (FP16)                 │
+│         ▼                  ▼                                      │
+│  ┌──────────────────────────────────────┐                        │
+│  │       Triton Inference Server        │                        │
+│  │                                      │                        │
+│  │  whisper_encoder (config.pbtxt)      │                        │
+│  │  - dynamic_batching: 50ms window     │                        │
+│  │  - max_batch_size: 32               │                        │
+│  │  - instance_group: 2×GPU            │                        │
+│  │                                      │                        │
+│  │  whisper_decoder (config.pbtxt)      │                        │
+│  │  - dynamic_batching: 10ms window     │                        │
+│  │  - max_batch_size: 32               │                        │
+│  │  - instance_group: 2×GPU            │                        │
+│  └──────────────────────────────────────┘                        │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+#### 9.3.2 Whisper 模型结构
+
+**Encoder (AudioEncoder):**
+
+```
+Input: mel spectrogram (batch, n_mels, n_frames)
+       │
+  conv1: Conv1d(n_mels → d_model, k=3, s=1, p=1)    # 升维但不降采样
+       │  GELU
+  conv2: Conv1d(d_model → d_model, k=3, s=2, p=1)   # 2× 降采样
+       │  GELU
+       │  shape → (batch, d_model, n_frames//2)
+       │
+  + positional_embedding (d_model, n_frames//2)       # 位置编码
+       │
+  × N transformer blocks (self-attention + FFN)
+       │
+  layer_norm → output (batch, n_frames//2, d_model)
+```
+
+**Decoder (TextDecoder):**
+
+```
+Input: tokens (batch, seq_len) + encoder_output (batch, n_frames, d_model)
+       │
+  token_embedding + positional_embedding
+       │
+  × N transformer blocks (self-attention + cross-attention + FFN)
+       │
+  layer_norm → linear(vocab_size) → logits (batch, seq_len, vocab_size)
+```
+
+**各模型关键维度:**
+
+| 模型 | n_mels | d_model | n_audio_ctx | vocab_size | n_text_ctx | Encoder ONNX | Decoder ONNX |
+|------|--------|---------|-------------|------------|------------|-------------|-------------|
+| tiny | 80 | 384 | 1500 | 51865 | 448 | ~150MB | ~100MB |
+| base | 80 | 512 | 1500 | 51865 | 448 | ~250MB | ~150MB |
+| small | 80 | 768 | 1500 | 51865 | 448 | ~500MB | ~250MB |
+| medium | 80 | 1024 | 1500 | 51865 | 448 | ~800MB | ~400MB |
+| large-v2 | 80 | 1280 | 1500 | 51865 | 448 | ~1.2GB | ~600MB |
+| **large-v3** | **128** | **1280** | **1500** | **51866** | **448** | **~1.2GB** | **~800MB** |
+
+#### 9.3.3 ONNX 导出关键技术点
+
+**1. Dynamo vs TorchScript 导出器:**
+
+PyTorch ≥2.1 中 `torch.onnx.export()` 默认使用 TorchDynamo-based 新导出器（依赖 `onnxscript`），但 Whisper 内部使用 `assert` 断言 + 动态 shape 控制流，`torch.export.export()` 无法捕获其计算图。
+
+**解决**: `export_whisper_to_onnx.py` 自动回退到 TorchScript-based 旧版导出器 (`dynamo=False`):
+
+```python
+try:
+    torch.onnx.export(model, args, path, ...)           # Dynamo (新)
+except Exception:
+    torch.onnx.export(model, args, path, dynamo=False)  # TorchScript (旧, 稳定)
+```
+
+**2. 变长输入支持 (Positional Embedding 切片):**
+
+Whisper encoder 原版 `forward()` 有断言要求输入帧数精确匹配 `positional_embedding` 长度:
+
+```python
+# whisper/model.py:197 (原始代码)
+assert x.shape[1:] == self.positional_embedding.shape  # 要求精确 3000 帧
+```
+
+这对实时流（1s 音频 ≈ 100 帧）不适用。导出前 monkey-patch 为按实际长度切片:
+
+```python
+# 原始: 固定 positional embedding
+x = (x + self.positional_embedding).to(x.dtype)
+
+# 修改: 按实际帧数切片 → 支持 ≤3000 帧的任意长度
+n_frames = x.shape[2]
+pe = self.positional_embedding
+if pe.shape[1] == x.shape[1]:       # (n_audio_ctx, d_model) 格式
+    pos_emb = pe[:n_frames, :].t()  # → (d_model, n_frames)
+else:                                # (d_model, n_audio_ctx) 格式
+    pos_emb = pe[:, :n_frames]       # → (d_model, n_frames)
+x = (x + pos_emb).to(x.dtype)
+```
+
+导出后立即恢复原始 `forward`。
+
+**3. Dynamic Axes:**
+
+```python
+dynamic_axes = {
+    "mel":             {0: "batch_size", 2: "n_frames"},     # 可变 batch + 可变帧数
+    "encoder_output":  {0: "batch_size", 1: "n_frames_out"}, # 输出帧数 = 输入 // 2
+}
+```
+
+**4. Mel Filterbank 导出:**
+
+从 torchaudio 提取并保存为 `.npy`，供 `transcriber_v2.py` 运行时 NumPy 加载（无需 torch 运行时依赖）。自动处理新版 torchaudio `(n_freqs, n_mels)` → `(n_mels, n_freqs)` 转置。
+
+#### 9.3.4 TensorRT 引擎生成流程
+
+导出的 ONNX 模型由 Triton Server 在**首次加载时**自动编译为 TensorRT 引擎:
+
+```
+ONNX 模型
+    │
+    ▼
+Triton Server 启动
+    │
+    │ onnxruntime_onnx backend 加载 model.onnx
+    ▼
+ONNX Runtime 解析图
+    │
+    │ TensorRT Execution Provider
+    │ ① 图优化 (算子融合: Conv+GELU, Attention+MatMul)
+    │ ② 精度转换 (FP32 → FP16, 精度损失 <0.5%)
+    │ ③ Kernel 自动调优 (针对 GPU 架构)
+    │ ④ 引擎序列化 + 缓存
+    ▼
+TensorRT Engine (.engine)
+    │ 缓存在 model_repo/whisper_encoder/1/model.engine
+    │ 第二次启动直接加载缓存 (跳过编译)
+    ▼
+GPU 推理就绪
+```
+
+**编译时间参考 (A10 24GB):**
+
+| 模型 | Encoder 编译 | Decoder 编译 | 总计 |
+|------|------------|------------|------|
+| tiny | ~30s | ~20s | ~50s |
+| base | ~1min | ~30s | ~1.5min |
+| small | ~2min | ~1min | ~3min |
+| medium | ~4min | ~2min | ~6min |
+| large-v3 | **~8min** | **~4min** | **~12min** |
+
+首次启动较慢，后续读取缓存秒级启动。
+
+#### 9.3.5 config.pbtxt 中的 TensorRT 配置
+
+```protobuf
+optimization {
+  execution_accelerators {
+    gpu_execution_accelerator: [{
+      name: "tensorrt"
+      parameters: { key: "precision_mode", value: "FP16" }        # FP16 推理
+      parameters: { key: "max_workspace_size_bytes", value: "2147483648" }  # 2GB 显存池
+    }]
+  }
+}
+```
+
+**关键参数说明:**
+
+| 参数 | 值 | 说明 |
+|------|-----|------|
+| `precision_mode` | `FP16` | 半精度，~2× 加速，精度损失 <0.5% |
+| `max_workspace_size_bytes` | `2147483648` (2GB) | TRT 编译时可用的最大显存 |
+| `trt_engine_cache_enable` | (默认 true) | 编译后缓存 .engine 文件 |
+
+#### 9.3.6 推理时数据流
+
+```
+[transcriber_v2.py]
+     │
+     │ audio (float32, 16000Hz, mono)
+     ▼
+audio_to_mel()  ←── mel_filters.npy (NumPy)
+     │
+     │ mel spectrogram (1, n_mels, ≤3000)
+     ▼
+TritonClient.infer("encoder", {"mel": mel})
+     │
+     │ gRPC → Triton Server → ONNX Runtime + TRT → GPU 推理
+     │ Dynamic Batching: 多个用户的 encoder 请求合并为一个 batch
+     ▼
+encoder_output (1, n_frames//2, d_model)
+     │
+     ▼
+TritonClient.infer("decoder", {"tokens": ..., "encoder_output": ...})
+     │
+     │ AR 循环: 每次调用生成 1 个 token
+     │ Dynamic Batching: 多个用户的 decoder 请求合并为一个 batch
+     ▼
+token IDs → WhisperTokenizer.decode() → 文本
+```
+
+**为什么 Decoder AR 循环也能批处理:**
+
+100 个用户同时在说话 → 每个用户的 decoder 都在逐 token 生成。在任意 10ms 窗口内，有 N 个用户恰好同时发送 decoder 请求 → Triton 自动将这 N 个请求合并为一个 batch 推理。这就是 `max_queue_delay_microseconds: 10000` (10ms) 的作用：牺牲 10ms 延迟换取 GPU batch 效率。

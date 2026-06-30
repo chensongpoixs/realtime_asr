@@ -21,3 +21,4 @@ openai-whisper>=20231117
 # ONNX 导出依赖 (一次性, 运行时不需要)
 torch>=2.0.0
 torchaudio>=2.0.0
+onnxscript>=0.1.0            # PyTorch 2.x Dynamo ONNX exporter 需要

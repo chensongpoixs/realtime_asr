@@ -41,7 +41,8 @@ output [
   {
     name: "logits"
     data_type: TYPE_FP32
-    dims: [ -1, 51865 ]       # 可变 token 位置, vocab_size=51865 (large-v3)
+    dims: [ -1, 51866 ]       # 可变 token 位置, vocab_size=51866 (large-v3)
+                               # 其他: 51865 (large-v2)
   }
 ]
 

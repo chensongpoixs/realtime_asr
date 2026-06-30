@@ -28,7 +28,8 @@ input [
   {
     name: "mel"
     data_type: TYPE_FP32
-    dims: [ 80, -1 ]          # 80 mel bins, 可变时间帧数
+    dims: [ 128, -1 ]         # 128 mel bins (large-v3), 可变时间帧数
+                               # 其他模型: tiny-large-v2 用 80
   }
 ]
 

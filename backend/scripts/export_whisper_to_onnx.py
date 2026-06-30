@@ -63,7 +63,7 @@ def parse_args():
         help="Decoder 最大 token 序列长度 (默认: 448)"
     )
     parser.add_argument(
-        "--hf_endpoint", type=str, default="",
+        "--hf_endpoint", type=str, default="https://hf-mirror.com",
         help="HuggingFace 镜像端点 (如 https://hf-mirror.com)"
     )
     return parser.parse_args()
@@ -103,7 +103,15 @@ def export_mel_filters(model, output_dir: Path):
         mel_scale="slaney",
     )
 
+    # torchaudio 新版 mel_scale.fb 返回 (n_freqs, n_mels)
+    # 统一转置为 (n_mels, n_freqs) 供 transcriber_v2.py 使用
     filterbank = mel_spec.mel_scale.fb.numpy()
+    if filterbank.shape[0] > filterbank.shape[1]:
+        # 形状如 (201, 128) → 转置为 (128, 201)
+        filterbank = filterbank.T
+        print(f"  [INFO] Mel filterbank 已自动转置: {filterbank.shape[0]} mels × {filterbank.shape[1]} bins")
+    else:
+        print(f"  [INFO] Mel filterbank: {filterbank.shape[0]} mels × {filterbank.shape[1]} bins")
 
     out_path = output_dir / "mel_filters.npy"
     np.save(out_path, filterbank.astype(np.float32))
@@ -115,10 +123,67 @@ def export_mel_filters(model, output_dir: Path):
 # ═══════════════════════════════════════════════════════════════
 
 
+def _patch_encoder_for_variable_length(encoder):
+    """Monkey-patch Whisper Encoder 以支持变长 mel 输入。
+
+    Whisper 原版 encoder.forward() 有断言:
+        assert x.shape[1:] == self.positional_embedding.shape
+
+    要求输入 mel frames 必须等于 n_audio_ctx (如 large-v3=1500)。
+    但实时流场景每次只传 ~100 帧，需要按实际长度切片 positional embedding。
+    """
+    import torch.nn.functional as F
+
+    original_forward = encoder.forward
+
+    def variable_length_forward(x: "torch.Tensor"):
+        """支持变长 mel 的 encoder forward。
+
+        Input:  (batch, n_mels, n_frames)  where n_frames ≤ n_audio_ctx*2
+        Output: (batch, n_frames//2, d_model)
+
+        Conv 输出为 (batch, d_model, seq_len)，但 transformer blocks 和
+        LayerNorm 需要 (batch, seq_len, d_model)。添加 transpose 解决。
+        """
+        # conv layers
+        x = F.gelu(encoder.conv1(x))
+        x = F.gelu(encoder.conv2(x))
+        # x.shape = (batch, d_model, n_frames_conv2)
+
+        n_frames = x.shape[2]
+        d_model_out = x.shape[1]
+        pe = encoder.positional_embedding
+
+        # 添加 positional embedding (在 (batch, d_model, seq_len) 空间)
+        if pe.shape[1] == d_model_out:
+            pos_emb = pe[:n_frames, :].t()    # (n_frames, d_model) → (d_model, n_frames)
+        else:
+            pos_emb = pe[:, :n_frames]         # (d_model, n_frames)
+        x = (x + pos_emb).to(x.dtype)
+
+        # ★ 关键: transpose 为 (batch, seq_len, d_model) 供 transformer 使用
+        # nn.Linear / LayerNorm 沿最后一维操作，需要 d_model 在最后一维
+        x = x.transpose(1, 2)  # (batch, d_model, seq_len) → (batch, seq_len, d_model)
+
+        # Transformer blocks
+        for block in encoder.blocks:
+            x = block(x)
+
+        # Layer norm (现在最后一维是 d_model)
+        x = encoder.ln_post(x)
+
+        return x
+
+    encoder.forward = variable_length_forward
+    return original_forward
+
+
 def export_encoder(model, output_dir: Path, args):
     """导出 Whisper Encoder 到 ONNX。
 
-    Input:  mel spectrogram  (batch, n_mels, n_frames)
+    变长输入支持: monkey-patch positional embedding，使 encoder 接受任意 ≤n_audio_ctx 的 mel frames。
+
+    Input:  mel spectrogram  (batch, n_mels, n_frames)   n_frames ≤ n_audio_ctx
     Output: encoder hidden states (batch, n_frames//2, d_model)
     """
     import torch
@@ -129,17 +194,26 @@ def export_encoder(model, output_dir: Path, args):
     encoder = model.encoder
     encoder.eval()
 
-    n_mels = model.dims.n_mels  # 80
-    d_model = model.dims.n_audio_state  # 1280 for large-v3
+    n_mels = model.dims.n_mels       # 128 (large-v3) / 80 (其他)
+    d_model = model.dims.n_audio_state  # 1280 (large-v3)
+    n_audio_ctx = model.dims.n_audio_ctx  # 1500 (encoder 内部最大帧数 = 输入 conv 后)
 
-    # 计算最大帧数: 30s 音频 @ 16kHz, hop_length=160
-    max_samples = args.max_audio_length * 16000
-    max_frames = (max_samples - 400) // 160 + 1  # n_fft=400, hop=160
+    # ─── 关键: 输入 mel frames 必须 = n_audio_ctx ──────────
+    # encoder.positional_embedding shape = (d_model, n_audio_ctx)
+    # conv2 stride=2 → 输出 = 输入 / 2 = n_audio_ctx
+    # 所以输入 mel frames = n_audio_ctx * 2
+    input_frames = n_audio_ctx * 2   # = 3000 for large-v3
 
-    # 创建 dummy input: (1, 80, max_frames)
-    dummy_mel = torch.randn(1, n_mels, max_frames, device=args.device)
+    print(f"  [INFO] n_mels={n_mels}, d_model={d_model}, n_audio_ctx={n_audio_ctx}")
+    print(f"  [INFO] dummy input: (1, {n_mels}, {input_frames})")
 
-    # 定义 dynamic axes
+    # ─── 变长支持 ──────────────────────────────────────────
+    original_forward = _patch_encoder_for_variable_length(encoder)
+
+    # Dummy input: 使用最大尺寸 (ONNX dynamic axes 允许运行时传入更小尺寸)
+    dummy_mel = torch.randn(1, n_mels, input_frames, device=args.device)
+
+    # 定义 dynamic axes (支持运行时变长)
     dynamic_axes = {
         "mel": {0: "batch_size", 2: "n_frames"},
         "encoder_output": {0: "batch_size", 1: "n_frames_out"},
@@ -150,7 +224,15 @@ def export_encoder(model, output_dir: Path, args):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
+    export_ok = False
+    export_error = None
+
     with torch.no_grad():
+        # 直接使用旧版 TorchScript ONNX exporter
+        # 注: Dynamo exporter (新版) 在此 PyTorch/whisper 版本组合下不稳定
+        #   - 图捕获 OK, 分解 OK, 但 ONNX IR 优化步骤失败
+        #   - 失败后残留状态会损坏 TorchScript 回退
+        print("  [INFO] 使用 TorchScript ONNX exporter (dynamo=False)...")
         torch.onnx.export(
             encoder,
             (dummy_mel,),
@@ -158,13 +240,18 @@ def export_encoder(model, output_dir: Path, args):
             input_names=["mel"],
             output_names=["encoder_output"],
             dynamic_axes=dynamic_axes,
-            opset_version=args.opset,
+            opset_version=17,
             do_constant_folding=True,
+            dynamo=False,
         )
+
+    # ─── 恢复原始 forward ─────────────────────────────────
+    encoder.forward = original_forward
 
     print(f"  [OK] Encoder ONNX 已保存: {output_path}")
     print(f"       大小: {output_path.stat().st_size / 1024 / 1024:.1f} MB")
     print(f"       耗时: {time.time() - t0:.1f}s")
+    print(f"       输入: (batch, {n_mels}, ≤{input_frames}) — 支持变长")
 
     # 验证
     print("  [验证] 检查 ONNX 模型有效性...")
@@ -174,15 +261,20 @@ def export_encoder(model, output_dir: Path, args):
         onnx.checker.check_model(onnx_model)
         print("  [验证] ✅ ONNX 模型有效")
 
-        # 测试推理
+        # 测试变长推理 (100 帧 → 约 1s 音频)
         import onnxruntime as ort
         session = ort.InferenceSession(
             str(output_path),
             providers=["CUDAExecutionProvider", "CPUExecutionProvider"],
         )
-        test_mel = torch.randn(1, n_mels, 100, device="cpu").numpy()
-        output = session.run(["encoder_output"], {"mel": test_mel})
-        print(f"  [验证] ✅ ONNX Runtime 推理成功: output shape={output[0].shape}")
+        for test_frames in [100, 500, 1000, input_frames]:
+            test_mel = torch.randn(1, n_mels, test_frames, device="cpu").numpy()
+            output = session.run(["encoder_output"], {"mel": test_mel})
+            expected_out_frames = test_frames // 2  # conv2 stride=2
+            actual_out_frames = output[0].shape[1]
+            status = "✅" if actual_out_frames == expected_out_frames else "❌"
+            print(f"  [验证] {status} input={test_frames}frames → output={actual_out_frames}frames "
+                  f"(expect={expected_out_frames})")
     except ImportError:
         print("  [验证] ⚠️  onnx/onnxruntime 未安装，跳过验证")
     except Exception as e:
@@ -205,11 +297,52 @@ def export_decoder(model, output_dir: Path, args):
     """
     import torch
     import torch.onnx
+    import torch.nn.functional as F
 
     print("\n[2/3] 导出 Whisper Decoder...")
 
     decoder = model.decoder
     decoder.eval()
+
+    # ─── 修复 PyTorch ≥2.5 SDPA: 全局替换为稳定手动实现 ──
+    # TorchScript tracer 的 builtin SDPA 与 Whisper 的位置参数不兼容
+    # 最稳定方案: 全局替换为手动实现的 SDPA (batch matmul + softmax)
+    import torch.nn.functional as torch_f
+    import whisper.model as whisper_model_module
+
+    _original_sdpa = torch_f.scaled_dot_product_attention
+
+    def _manual_sdpa(query, key, value, *args, **kwargs):
+        """纯 PyTorch 手动实现 scaled_dot_product_attention，
+        避免与 TorchScript builtin SDPA 的兼容性问题。
+        兼容 old-style positional mask 参数。
+        """
+        # 提取 mask (可能是位置参数或关键字参数)
+        attn_mask = kwargs.pop('attn_mask', None)
+        is_causal = kwargs.pop('is_causal', False)
+        if args and isinstance(args[0], torch.Tensor):
+            attn_mask = args[0]
+            args = args[1:]
+        elif args and isinstance(args[0], bool):
+            is_causal = args[0]
+            args = args[1:]
+
+        scale_factor = 1.0 / (query.size(-1) ** 0.5)
+        attn_weight = query @ key.transpose(-2, -1) * scale_factor
+
+        if is_causal:
+            L, S = attn_weight.size(-2), attn_weight.size(-1)
+            causal_mask = torch.ones(L, S, dtype=torch.bool, device=attn_weight.device).triu(1)
+            attn_weight = attn_weight.masked_fill(causal_mask, float('-inf'))
+
+        if attn_mask is not None:
+            attn_weight += attn_mask
+
+        attn_weight = torch.softmax(attn_weight, dim=-1)
+        return attn_weight @ value
+
+    torch_f.scaled_dot_product_attention = _manual_sdpa
+    whisper_model_module.scaled_dot_product_attention = _manual_sdpa
 
     d_model = model.dims.n_audio_state  # 1280
     n_audio_ctx = model.dims.n_audio_ctx  # 1500
@@ -244,7 +377,12 @@ def export_decoder(model, output_dir: Path, args):
     output_path.parent.mkdir(parents=True, exist_ok=True)
 
     t0 = time.time()
+
     with torch.no_grad():
+        # 直接使用旧版 TorchScript ONNX exporter
+        # 注: Dynamo exporter 在 decoder 上也因 Whisper 内部 assert +
+        #     复杂 attention 逻辑而失败，状态损坏问题同在
+        print("  [INFO] 使用 TorchScript ONNX exporter (dynamo=False)...")
         torch.onnx.export(
             wrapped,
             (dummy_tokens, dummy_encoder_output),
@@ -252,13 +390,18 @@ def export_decoder(model, output_dir: Path, args):
             input_names=["tokens", "encoder_output"],
             output_names=["logits"],
             dynamic_axes=dynamic_axes,
-            opset_version=args.opset,
+            opset_version=17,
             do_constant_folding=True,
+            dynamo=False,
         )
 
     print(f"  [OK] Decoder ONNX 已保存: {output_path}")
     print(f"       大小: {output_path.stat().st_size / 1024 / 1024:.1f} MB")
     print(f"       耗时: {time.time() - t0:.1f}s")
+
+    # ─── 恢复原始 sdpa ───────────────────────────────────
+    torch_f.scaled_dot_product_attention = _original_sdpa
+    whisper_model_module.scaled_dot_product_attention = _original_sdpa
 
     # 验证
     print("  [验证] 检查 ONNX 模型有效性...")

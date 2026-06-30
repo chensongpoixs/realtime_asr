@@ -36,6 +36,11 @@ def _create_mel_filters(
 ) -> np.ndarray:
     """创建 mel 滤波器组矩阵，与 OpenAI Whisper 的 mel filterbank 一致。
 
+    Args:
+        n_mels: mel 滤波器数量 (large-v3=128, 其他=80)
+        n_fft: FFT 窗口大小 (Whisper 固定 400)
+        sample_rate: 采样率 (Whisper 固定 16000)
+
     Returns:
         shape (n_mels, n_fft // 2 + 1) 的 float32 数组
     """
@@ -79,8 +84,11 @@ def _load_mel_filters() -> np.ndarray:
 
     .npy 文件由 export_whisper_to_onnx.py 脚本导出，
     包含从 Whisper 模型权重中提取的精确 mel filterbank。
+
+    自动检测并修正方向: 统一存储为 (n_mels, n_freq_bins)。
+    - large-v3: n_mels=128, n_freq_bins=201
+    - 其他模型: n_mels=80,  n_freq_bins=201
     """
-    # 搜索路径
     search_paths = [
         Path(__file__).parent.parent.parent / "triton_model_repo" / "mel_filters.npy",
         Path(__file__).parent.parent.parent / "scripts" / "mel_filters.npy",
@@ -89,12 +97,22 @@ def _load_mel_filters() -> np.ndarray:
     for p in search_paths:
         if p.exists():
             filters = np.load(p)
-            logger.info("[MODEL] 加载 mel filterbank: %s (shape=%s)", p, filters.shape)
+            # ─── 自动修正方向 ──────────────────────────────
+            # 预期: n_freq_bins (201) > n_mels (80 或 128)
+            # 正常方向: (n_mels, n_freq_bins)
+            # 转置方向: (n_freq_bins, n_mels)
+            if filters.shape[0] > filters.shape[1]:
+                logger.info("[MODEL] Mel filterbank 方向修正: (%d,%d) → (%d,%d)",
+                           filters.shape[0], filters.shape[1],
+                           filters.shape[1], filters.shape[0])
+                filters = filters.T
+            logger.info("[MODEL] 加载 mel filterbank: %s → shape=%s (n_mels=%d, n_bins=%d)",
+                       p, filters.shape, filters.shape[0], filters.shape[1])
             return filters.astype(np.float32)
 
-    # 运行时计算 (备选)
-    logger.info("[MODEL] mel_filters.npy 未找到，运行时计算 mel filterbank")
-    return _create_mel_filters()
+    # 运行时计算 (备选, 默认 n_mels=80)
+    logger.info("[MODEL] mel_filters.npy 未找到，运行时计算 mel filterbank (n_mels=80)")
+    return _create_mel_filters(n_mels=80)
 
 
 # 模块级缓存
@@ -111,16 +129,16 @@ def _get_mel_filters() -> np.ndarray:
 def audio_to_mel(
     audio: np.ndarray,
     sample_rate: int = 16000,
-    n_mels: int = 80,
     n_fft: int = 400,
     hop_length: int = 160,
 ) -> np.ndarray:
     """将 float32 单声道音频转为 log-mel spectrogram。
 
+    n_mels 从加载的 mel filterbank 自动检测（large-v3=128, 其他=80）。
+
     Args:
         audio: float32 一维数组，范围 [-1, 1]
         sample_rate: 采样率 (默认 16000)
-        n_mels: mel 滤波器组数量 (默认 80)
         n_fft: FFT 窗口大小 (默认 400 = 25ms @ 16kHz)
         hop_length: 帧移 (默认 160 = 10ms @ 16kHz)
 
@@ -147,6 +165,7 @@ def audio_to_mel(
 
     # Mel 滤波
     mel_filters = _get_mel_filters()
+    n_mels = mel_filters.shape[0]  # large-v3=128, 其他=80
     # 截断滤波器到实际 FFT bin 数
     n_bins = power.shape[0]
     filters = mel_filters[:, :n_bins]

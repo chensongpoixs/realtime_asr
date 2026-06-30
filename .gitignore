@@ -22,3 +22,13 @@ Thumbs.db
 /backend/models
 /frontend/node_modules
 /frontend/dist
+
+# Triton ONNX 模型文件 (体积 >6GB, 通过 export 脚本生成)
+/backend/triton_model_repo/whisper_encoder/1/
+/backend/triton_model_repo/whisper_decoder/1/
+/backend/triton_model_repo/mel_filters.npy
+/backend/triton.log
+/backend/triton.pid
+/backend/*.pem
+/backend/fullchain.pem
+/backend/privkey.pem
